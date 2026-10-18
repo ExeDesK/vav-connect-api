@@ -67,3 +67,27 @@ class RateLimitError(APIError):
             return max(0.0, (future - datetime.now(timezone.utc)).total_seconds())
         except (TypeError, ValueError, OverflowError):
             return None
+
+
+class ControlError(VAVError):
+    """Write is disabled or preflight safety validation failed."""
+
+
+class WriteUncertainError(VAVError):
+    """Write may have completed, but the server state is not confirmed.
+
+    Never automatically retry this operation; perform read-only inspection.
+    """
+
+
+class PartialWriteError(WriteUncertainError):
+    """Global scenario partly applied or uncertain; no automatic rollback."""
+
+    def __init__(self, operation: str, *, completed: tuple[str, ...], uncertain_target: str) -> None:
+        self.operation = operation
+        self.completed = completed
+        self.uncertain_target = uncertain_target
+        super().__init__(
+            f"Scenario {operation} partiel/indetermine : {len(completed)} etapes confirmees; "
+            "relire VAV avant toute reprise"
+        )

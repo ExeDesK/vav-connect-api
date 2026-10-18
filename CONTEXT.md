@@ -1,43 +1,22 @@
 # CONTEXT — vav-connect-api
 
-## Objectif
+## Architecture
 
-SDK Python indépendant, asynchrone, pour VAV Connect/Otodo. L'intégration native Home Assistant HACS `ha-vav-connect` vivra dans un **deuxième dépôt**. Conserver la passerelle existante connectée, appairée et active dans les dispositifs d'effacement du réseau électrique.
+SDK Python 3.11+ / `aiohttp`, asynchrone, indépendant de Home Assistant. Objectif futur : intégration HACS dans un **deuxième dépôt** `ha-vav-connect`. Python choisi pour utilisation directe dans HA sans serveur Node, choix détaillé dans README. Branche `ts/rest` reportée (non créée).
 
-## Décisions confirmées au 18 octobre 2026
+## Historique et validations réelles — 18/10/2026
 
-- `main` : Python 3.11+, `aiohttp`, dataclasses immuables. Motivation documentée dans `README.md`. Version courante : **0.2.0 alpha**.
-- Une expérience TS/REST (TypeScript/Fastify) est envisagée **ultérieurement** ; l'utilisateur a explicitement reporté la création de la branche `ts/rest`. Le dépôt courant ne doit pas supposer cette branche existante.
-- Lecture seule : ni PUT, ni PATCH, ni DELETE, ni POST modifiant les thermostats ou l'état du logement. Seuls POST login et refresh autorisés.
-- `POST /authenticate` avec email/password/parkName; `POST /refreshToken` sans body et `token: <refresh_token>`.
-- **Validation réelle du refresh réussie** : nouveaux access et refresh tokens différents des précédents, suivis d'un GET `/homes` accepté avec le nouvel access token. Ne plus présenter le type de jeton de refresh comme une hypothèse.
-- **Premier test réel de lecture réussi** : un logement, une passerelle et cinq zones, températures et modes correctement interprétés. Ne pas publier les identifiants de ressources ni les données personnelles de ce test.
-- Tokens seulement en mémoire dans le SDK ; sérialisation explicite si l'application appelante possède un stockage confidentiel. Les deux jetons tournent : une persistance cohérente est importante.
-- GET en reprise bornée sur erreurs transitoires, pas de retries POST/429, 403 != 401, redirections interdits pour protéger le header `token`.
-- CI : tests entièrement synthétiques sur faux backend local, aucune variable secrète ni requête cloud.
-- README, VERSIONS, CONTEXT et AGENTS doivent être actualisés lors de chaque évolution.
+- v0.1.x : authentification, lecture cloud de cinq zones, températures et capteurs.
+- v0.2.0 : `POST /refreshToken` sans body, header `token` contenant le **refresh token** ; rotation des deux tokens et nouveau GET acceptés en conditions réelles ; robustesse, stockage configurable.
+- Banc d'essai expérimental **séparé** : changement de mode individuel (Confort -2), modification ponctuelle et groupée d'horaires (lundi=0), Présence/Absence, Vacances/Hors gel, annulation, et modification de consigne Confort. Vérifications réelles GET et observations dans l'application officielle.
+- Méthodes d'écriture observées : **PATCH** `/homes/{homeId}` pour `isAtHome`, **PUT** `/hubs/{hubId}/local-services/{serviceId}` pour le service thermostat complet. Les POST initiaux supposés pour ces routes étaient incorrects.
+- Mode thermostat `workingMode` : 0 Auto,1 Confort,2 Confort -1,3 Confort -2,4 Éco,5 Hors gel,6 Off,7 Vacances. `holidays.mm` et `weeklyEvents.mm` : 0 Off,2 Confort,3 Éco,8 Hors gel,9 Confort -1,10 Confort -2. `d=0` lundi, `t=1440*d+minuteDuJour`.
+- Otodo **peut conserver `holidays`** sur des thermostats revenus à `workingMode=0` Auto ; cela ne signifie pas que Vacances est actif.
+- v0.3.0 : intégration des commandes dans le SDK, mais **lecture seule par défaut** et double opt-in `allow_writes=True` + `apply=True`. Précontrôle des données, refus si `loadShedding` non-false, contrôle juste avant PUT, GET de vérification, état partiel explicite. **83 tests locaux synthétiques** ; les nouvelles méthodes v0.3.0 n'ont PAS encore été appelées sur Otodo réel dans cet environnement.
 
-## Connaissances sur les thermostats
+## Risques et suites
 
-- `workingMode`: 0 Auto, 1 Confort, 2 Confort -1, 3 Confort -2, 4 Éco, 5 Hors gel, 6 Off, 7 Vacances.
-- Codes fil pilote pour capacité 6, `weeklyEvents.mm`, `holidays.mm`: 0 Off, 2 Confort, 3 Éco, 8 Hors gel, 9 Confort -1, 10 Confort -2.
-- `comfortTemp` est la consigne Confort en °C. `weeklyEvents.t` correspond à la minute absolue depuis le début de la semaine, avec `d` indice 0..6 ; nom du jour `d=0` non encore confirmé.
-- Mode Vacances : `workingMode=7`, `holidays.until` UTC et `holidays.mm` 3/8/0. L'annulation envoie `workingMode=0` sans champ `holidays` dans la **requête**, et un POST maison `isAtHome:true`. Supprimer effectivement le champ en base n'est pas confirmé.
-- La propriété `loadShedding` ne doit **jamais** être écrite et ne prouve pas l'état actuel d'un effacement. Les valeurs kWh sont disponibles mais leur accumulation/période est inconnue.
-
-## Inconnues / limites
-
-- Contrôles de version, conflit ou champs requis du PUT thermostat, et comportement pendant un effacement actif : écriture reportée.
-- Jour civil correspondant à `weeklyEvents.d=0`.
-- Nature temporelle des valeurs kWh et signaux d'énergie.
-- Déclenchement et fonctionnement du WebSocket.
-- Quotas cloud réels et politique de polling optimale.
-- HTTP 304 si le backend utilise un cache ETag : pas de cache implémenté.
-- Persistance sécurisée côté HA, à concevoir selon les mécanismes natifs HA.
-
-## Validation et prochaines étapes
-
-- Suite automatique v0.2.0 : **51 tests réussis localement**, sans API de production.
-- Contrôler sur GitHub la CI et le commit de la v0.2.0 après application du patch au dépôt personnel.
-- Eventuellement publier sur PyPI après validation packaging et usages du SDK ; ne pas activer l'upload automatiquement.
-- Créer ensuite `ha-vav-connect` : config flow, coordinator, entités en lecture seule, refresh et stockage de session confié à HA.
+- `loadShedding=false` ne prouve pas l'absence de délestage/effacement actif. Aucune écriture du champ, du Zigbee ou désappairage de passerelle. Vérifier indépendamment avec VAV avant commandes.
+- Pas de transaction globale ni de contrôle atomique de version/ETag connu : conflit concurrent possible après la dernière relecture. Pas de rollback automatique ni retry PUT/PATCH.
+- KWh cumulative/intervalle inconnu, quotas API inconnus, WebSocket non étudié, HTTP 304 sans cache.
+- Première suite : tester les nouveaux aperçus sur compte réel, puis les écritures **sous supervision hors effacement** ; ensuite HACS avec config flow/Coordinator et pilotage opt-in.

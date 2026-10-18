@@ -1,8 +1,9 @@
-"""Client HTTP asynchrone VAV Connect/Otodo, strictement en lecture seule.
+"""Asynchronous Otodo client, read-only by default.
 
-Aucun PUT/PATCH/DELETE ni commande de chauffage. Les seuls POST autorises
-sont /authenticate et /refreshToken. Les GET sont relances de facon bornee
-uniquement sur des erreurs transitoires, jamais sur un HTTP 429.
+Control requires TWO deliberate opt-ins: allow_writes=True during construction
+AND apply=True on each command. POST of sessions and GET reads retain their
+original safe behavior. Writes are limited to two observed API routes and are
+never automatically retried.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any, Literal
@@ -23,6 +25,12 @@ from .exceptions import (
     RateLimitError, TokenPersistenceError, TransportError,
 )
 from .models import Device, Home, Hub, Room, Snapshot, Thermostat
+from .exceptions import ControlError, WriteUncertainError
+from .control import VAVControl, ControlResult
+from .enums import PilotMode, WorkingMode
+from .models import WeekEvent
+from datetime import datetime
+from typing import Mapping, Sequence
 
 DEFAULT_BASE_URL = "https://api.gateway.otodo.io"
 TokenCallback = Callable[[SessionTokens], Awaitable[None]]
@@ -51,7 +59,10 @@ class VAVClient:
         token_callback: TokenCallback | None = None,
         max_read_retries: int = 1,
         retry_backoff_seconds: float = 0.25,
+        allow_writes: bool = False,
     ) -> None:
+        if type(allow_writes) is not bool:
+            raise ValueError("allow_writes doit etre un booleen")
         if bool(email) != bool(password):
             raise ValueError("Fournir email et mot de passe ensemble, ou des tokens existants")
         if tokens is None and not (email and password):
@@ -91,9 +102,11 @@ class VAVClient:
         self._max_read_retries = max_read_retries
         self._retry_backoff_seconds = retry_backoff_seconds
         self._auth_lock = asyncio.Lock()
+        self._write_lock = asyncio.Lock()
+        self.allow_writes = allow_writes
 
     def __repr__(self) -> str:
-        return f"VAVClient(authenticated={self._tokens is not None})"
+        return f"VAVClient(authenticated={self._tokens is not None}, writes_enabled={self.allow_writes})"
 
     @property
     def tokens(self) -> SessionTokens | None:
@@ -127,7 +140,7 @@ class VAVClient:
             "mobileversion": "4.14.4",
             "timezoneid": "GMT",
             "useragent": "android.vav.4.14.4",
-            "User-Agent": "vav-connect-api/0.2.0",
+            "User-Agent": "vav-connect-api/0.3.0",
         }
         if token is not None:
             headers["token"] = token
@@ -142,7 +155,7 @@ class VAVClient:
         body: object = _MISSING,
         empty_body: bool = False,
     ) -> object:
-        # Verrou de securite: pas de PUT/PATCH/DELETE ni de POST de pilotage.
+        # GET and authentication only: writes use separate whitelisted methods.
         if method not in {"GET", "POST"} or (method == "POST" and path not in {"/authenticate", "/refreshToken"}):
             raise ValueError("Lecture seule : seuls GET et les POST de session sont autorises")
         if not path.startswith("/") or path.startswith("//") or "?" in path or "#" in path:
@@ -342,3 +355,95 @@ class VAVClient:
         for hub in hubs:
             thermostats.extend(await self.get_thermostats(hub.id))
         return Snapshot.from_parts(home, hubs, rooms, devices, tuple(thermostats))
+
+    @property
+    def control(self) -> VAVControl:
+        """Access the write facade. Preview by default, writes require two opt-ins."""
+        return VAVControl(self)
+
+    async def set_working_mode(self, thermostat_id: str, mode: WorkingMode, *, apply: bool = False) -> ControlResult:
+        return await self.control.set_working_mode(thermostat_id, mode, apply=apply)
+
+    async def set_comfort_temperature(self, thermostat_id: str, temperature_c: float, *, apply: bool = False) -> ControlResult:
+        return await self.control.set_comfort_temperature(thermostat_id, temperature_c, apply=apply)
+
+    async def set_weekly_schedule(self, thermostat_id: str, events: Sequence[WeekEvent], *, apply: bool = False) -> ControlResult:
+        return await self.control.set_weekly_schedule(thermostat_id, events, apply=apply)
+
+    async def replace_schedule_days(self, thermostat_id: str, days: Mapping[int, Sequence[WeekEvent]], *, apply: bool = False) -> ControlResult:
+        return await self.control.replace_schedule_days(thermostat_id, days, apply=apply)
+
+    async def set_presence(self, is_at_home: bool, *, apply: bool = False) -> ControlResult:
+        return await self.control.set_presence(is_at_home, apply=apply)
+
+    async def set_holidays(self, *, until: datetime, pilot_mode: PilotMode, apply: bool = False) -> ControlResult:
+        return await self.control.set_holidays(until=until, pilot_mode=pilot_mode, apply=apply)
+
+    async def cancel_holidays(self, *, apply: bool = False) -> ControlResult:
+        return await self.control.cancel_holidays(apply=apply)
+
+    async def _send_thermostat_put(self, target: object) -> None:
+        if self.allow_writes is not True:
+            raise ControlError("Ecritures desactivees")
+        hub = getattr(target, "hub_id")
+        thermostat = getattr(target, "thermostat_id")
+        if not isinstance(hub, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", hub) \
+                or not isinstance(thermostat, str) or not re.fullmatch(r"[0-9]{1,20}", thermostat):
+            raise ControlError("Identifiant du service non valide pour PUT")
+        path = f"/hubs/{hub}/local-services/{thermostat}"
+        body = getattr(target, "after")
+        if not isinstance(body, dict) or str(body.get("_id")) != thermostat \
+                or body.get("hubId") != hub or body.get("loadShedding") is not False:
+            raise ControlError("Payload de controle non valide")
+        data = await self._control_http("PUT", path, body)
+        if not isinstance(data, dict) or data.get("result") is not True:
+            raise WriteUncertainError("PUT accepte mais confirmation JSON inattendue")
+
+    async def _send_home_patch(self, home_id: str, is_at_home: bool) -> None:
+        if self.allow_writes is not True:
+            raise ControlError("Ecritures desactivees")
+        if not isinstance(home_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", home_id) \
+                or type(is_at_home) is not bool:
+            raise ControlError("PATCH de presence invalide")
+        data = await self._control_http("PATCH", f"/homes/{home_id}", {"isAtHome": is_at_home})
+        if not isinstance(data, dict) or data.get("isAtHome") is not is_at_home:
+            raise WriteUncertainError("PATCH accepte mais presence non confirmee")
+
+    async def _control_http(self, method: Literal["PUT", "PATCH"], path: str, body: dict[str, Any]) -> object:
+        """Exactly one HTTP write attempt, never retried, on whitelisted routes."""
+        if self.allow_writes is not True:
+            raise ControlError("Ecritures desactivees")
+        if not (
+            (method == "PUT" and re.fullmatch(r"/hubs/[A-Za-z0-9_-]+/local-services/[0-9]+", path))
+            or (method == "PATCH" and re.fullmatch(r"/homes/[A-Za-z0-9_-]+", path))
+        ):
+            raise ControlError("Route d'ecriture non autorisee")
+        # A preemptive refresh is allowed before the write; no retry on HTTP 401.
+        await self._ensure_valid_tokens()
+        if self._tokens is None:
+            raise AuthenticationError("Session manquante")
+        session = await self._get_session()
+        try:
+            async with session.request(
+                method, self._base_url + path, json=body,
+                headers=self._headers(self._tokens.access_token),
+                timeout=self._timeout, allow_redirects=False,
+            ) as response:
+                if response.status == 401:
+                    raise AuthenticationError("Ecriture refusee (HTTP 401); etat a verifier")
+                if response.status == 403:
+                    raise ForbiddenError(method, path)
+                if response.status == 429:
+                    raise RateLimitError(method, path, response.headers.get("Retry-After"))
+                if 300 <= response.status < 400:
+                    raise WriteUncertainError("Redirection de l'ecriture refusee")
+                if response.status >= 400:
+                    raise APIError(method, path, response.status)
+                if response.status == 204:
+                    raise WriteUncertainError("Ecriture HTTP 204, etat distant incertain")
+                try:
+                    return await response.json(content_type=None)
+                except (aiohttp.ContentTypeError, json.JSONDecodeError, UnicodeDecodeError):
+                    raise WriteUncertainError("Reponse JSON de mutation non lisible") from None
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            raise WriteUncertainError("Ecriture interrompue; etat distant incertain") from None

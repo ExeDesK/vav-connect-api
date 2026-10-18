@@ -1,5 +1,14 @@
 # Historique des versions
 
+## 0.3.0 — 2026-10-18 — commandes optionnelles
+
+- Double opt-in `allow_writes=True` et `apply=True` ; aperçu des changements sans écriture par défaut.
+- Modes, confort, calendrier complet ou par jour, Présence/Absence, Vacances et annulation anticipée.
+- PUT du thermostat complet après contrôle de fraîcheur, sauvegarde des autres champs, `loadShedding` jamais modifié ; PATCH maison.
+- Aucun retry des commandes ; vérification GET, exception d'état incertain et gestion des scénarios globaux partiels.
+- Support des métadonnées `holidays` persistantes alors que le mode est Auto ; `d=0` correspond au lundi.
+- Documentation CONTROL et exemple d'aperçu ; **83 tests locaux sur serveur simulé**. Le banc d'essai historique, distinct du SDK, a validé les routes sur VAV réel.
+
 ## 0.2.0 — 2026-10-18 — fiabilité et persistance de session
 
 - Le refresh a été **validé sur le cloud réel Otodo** : `POST /refreshToken` avec le **refresh token** dans l'en-tête `token`, requête sans body, et rotation effective des **deux** jetons. Une lecture GET avec le nouvel access token a réussi.

@@ -1,4 +1,4 @@
-# Politique de robustesse, session et confidentialité — v0.2.0
+# Politique de robustesse, session et confidentialité — v0.3.0
 
 ## Authentification confirmée
 
@@ -45,3 +45,12 @@ Les délais, quotas et règles de disponibilité d'Otodo ne sont pas documentés
 ## Données exclues des modèles
 
 Les projections de `/devices`, `/hubs` et `/homes` ne retiennent pas les champs arbitraires ou sensibles : clés Zigbee, copies de propriétés, secrets du hub, Wi-Fi, PDL, noms et coordonnées de l'installateur. Les tests introduisent volontairement des valeurs « secret » synthétiques pour prouver qu'elles n'atteignent pas la représentation des modèles ou les messages d'erreur.
+
+## Commandes v0.3.0 — autorisation et cohérence
+
+- `allow_writes=False` et `apply=False` par défaut. Sans les deux accords, aucune écriture.
+- PATCH logement, PUT thermostat exclusivement ; l'API en lecture seule reste inchangée. **Aucun retry de PUT/PATCH**, y compris sur timeout, 401, 5xx.
+- À chaque commande : lecture du logement et des zones, validation de `loadShedding` strictement `false`, comparaison du service brut juste avant PUT, puis contrôle GET. Des modifications de l'application officielle peuvent encore intervenir dans la fenêtre entre lecture et PUT.
+- Les scénarios globaux sont **non atomiques** ; `PartialWriteError` fournit les seules étapes confirmées, puis l'utilisateur doit inspecter l'état réel.
+- Annulation Vacances : `workingMode=0` suffit à désactiver Vacances, même si l'objet historique `holidays` persiste.
+- Aucune observation du booléen `loadShedding` ne prouve à elle seule que l'effacement réseau est inactif.

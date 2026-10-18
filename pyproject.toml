@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vav-connect-api"
-version = "0.2.0"
-description = "Async read-only Python SDK for VAV Connect / Otodo"
+version = "0.3.0"
+description = "Async VAV Connect / Otodo Python SDK (read-only by default)"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

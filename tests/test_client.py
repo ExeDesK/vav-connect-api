@@ -229,8 +229,10 @@ async def test_non_json_response_fails_without_raw_body() -> None:
             assert "TOP_SECRET_HTML" not in str(caught.value)
 
 
-def test_no_heating_write_method_in_read_only_sdk() -> None:
-    assert not hasattr(VAVClient, "set_comfort_temperature")
-    assert not hasattr(VAVClient, "set_working_mode")
+def test_write_methods_exist_but_are_opt_in() -> None:
+    client = VAVClient("user@test.invalid", "secret")
+    assert client.allow_writes is False
+    assert callable(client.set_comfort_temperature)
+    assert callable(client.set_working_mode)
     with pytest.raises(ValueError):
         VAVClient("user@test.invalid", "secret", base_url="http://api.gateway.otodo.io")

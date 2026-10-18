@@ -2,9 +2,9 @@
 
 **SDK Python asynchrone, communautaire et non officiel pour VAV Connect / Otodo.**
 
-**Version 0.2.0 — alpha, strictement en lecture seule.** Les lectures et le renouvellement de session ont été validés sur un compte autorisé réel le 18 octobre 2026. Cette bibliothèque est indépendante de Home Assistant : la future intégration HACS sera hébergée dans un dépôt distinct, `ha-vav-connect`.
+**Version 0.3.0 — alpha, lecture seule par défaut ; commandes opt-in.** Les lectures et le renouvellement de session ont été validés sur un compte autorisé réel le 18 octobre 2026. Cette bibliothèque est indépendante de Home Assistant : la future intégration HACS sera hébergée dans un dépôt distinct, `ha-vav-connect`.
 
-> **Préserver VAV et l'effacement électrique.** Le SDK n'envoie aucune commande aux thermostats et ne modifie ni la passerelle, ni son appairage, ni les paramètres d'effacement. Les seuls `POST` autorisés sont `/authenticate` et `/refreshToken`. Aucun `PUT`, `PATCH` ou `DELETE` n'est implémenté.
+> **Préserver VAV et l'effacement électrique.** Les commandes exigent `allow_writes=True` **et** `apply=True` ; aucune écriture par défaut. Ne jamais désappairer la passerelle ni écrire `loadShedding`. Le booléen `loadShedding=false` ne garantit pas qu'aucun effacement électrique soit en cours ; vérifier indépendamment avant tout pilotage.
 
 ## Pourquoi Python plutôt que TypeScript / JavaScript ?
 
@@ -19,7 +19,7 @@ Un **SDK TypeScript et une API REST Fastify** seraient pertinents pour une utili
 
 **Architecture cible :** `ha-vav-connect` (HACS/Python) → `vav-connect-api` (ce SDK) → API cloud Otodo → passerelle VAV d'origine.
 
-## Fonctionnalités de v0.2.0
+## Fonctionnalités de v0.3.0
 
 - Authentification initiale : `POST /authenticate`, `parkName=vav`.
 - Refresh **confirmé sur le cloud réel** : `POST /refreshToken` sans corps, en-tête `token: <refresh_token>`. **Les deux jetons changent** à chaque renouvellement réussi ; le nouvel `access_token` a été testé sur `GET /homes`.
@@ -30,7 +30,8 @@ Un **SDK TypeScript et une API REST Fastify** seraient pertinents pour une utili
 - Lecture de `/homes`, `/hubs`, `/rooms`, `/devices`, `/hubs/{hubId}/local-services` et `/health` (état du **cloud**, pas état des radiateurs).
 - Modèles immuables, projection sans secrets Zigbee/Wi-Fi ni métadonnées personnelles inutiles, reconnaissance des 8 modes thermostat, ordres fil pilote, vacances et événements hebdomadaires.
 - Propriétés dérivées par zone : température, consigne Confort, humidité, batterie, connectivité, puissance. La mesure kWh est disponible **sans hypothèse de cumul**.
-- **51 tests automatisés locaux** sans aucun contact avec le cloud Otodo.
+- **83 tests automatisés locaux** sans contact avec le cloud Otodo.
+- **Commandes optionnelles** : modes, Confort, calendrier, Présence/Absence, Vacances et annulation. Un `PATCH /homes/{id}` ou un `PUT /hubs/{hubId}/local-services/{serviceId}` n'est possible qu'après double opt-in. Pas de retry automatique des écritures.
 
 ## Installer et tester (Windows / PowerShell)
 
@@ -113,21 +114,43 @@ Ces deux énumérations sont distinctes :
 | 9 | Confort -1 °C |
 | 10 | Confort -2 °C |
 
-Pendant les vacances, `workingMode=7` et `holidays` contient une date ISO-UTC et un mode `mm` (`3` Éco, `8` Hors gel, `0` Arrêt). Le tableau `weeklyEvents` utilise `d` (indice 0..6), `t` (minute absolue depuis le début de la semaine) et `mm` (ordre fil pilote). **La correspondance entre `d=0` et le jour civil précis reste à confirmer**.
+Pendant les vacances, `workingMode=7` et `holidays` contient une date ISO-UTC et un mode `mm` (`3` Éco, `8` Hors gel, `0` Arrêt). Le tableau `weeklyEvents` utilise `d` (indice 0..6), `t` (minute absolue depuis le début de la semaine) et `mm` (ordre fil pilote). **`d=0` correspond au lundi** (confirmé dans VAV) ; `d=6` au dimanche.
 
 Les méthodes `thermostat.events_for_day(d)`, `zone.humidity_pct`, `zone.battery_pct`, `zone.power_w`, etc., sont des accès **en lecture seule** à ces données.
 
-## Limites de cette version
+## Contrôler VAV en v0.3.0
 
-- Les commandes de température, modes, présence, vacances et programmation ne sont **pas implémentées** malgré leur observation dans l'application Android. Les requêtes d'écriture de l'application transmettent quasiment tout l'objet thermostat ; réémettre un ancien `loadShedding` serait risqué pour l'effacement.
-- Le succès HTTP du refresh et la rotation des tokens sont **validés sur un compte réel** ; la reprise automatique après des mois d'inactivité et la persistance sur stockage HA restent à éprouver dans le futur client HA.
-- Les erreurs HTTP `304` sont remontées (`ProtocolError`) : pas de cache ETag exploitable à ce stade.
-- Les propriétés liées à l'effacement et les valeurs kWh restent **non interprétées** au-delà de leurs données brutes autorisées.
-- WebSocket, synchronisation des programmations et contrôle concurrent des modifications ne sont pas implémentés.
+Le SDK est **lecture seule par défaut**. Un appel de commande sans `apply=True` ne fait qu'un aperçu, même si les écritures sont autorisées. Le SDK ne propose aucun serveur REST.
+
+```python
+import asyncio, os
+from vav_connect import VAVClient, WorkingMode
+
+async def main():
+    async with VAVClient(os.environ["VAV_EMAIL"], os.environ["VAV_PASSWORD"]) as client:
+        zone = (await client.get_snapshot()).zones[0]
+        plan = await client.set_working_mode(zone.thermostat_id, WorkingMode.COMFORT_MINUS_TWO)
+        print(plan.changes, plan.applied)  # aperçu uniquement
+        # Pour l'écriture réelle (après vérification VAV hors effacement) :
+        # VAVClient(..., allow_writes=True), ET set_working_mode(..., apply=True)
+
+asyncio.run(main())
+```
+
+Voir [docs/CONTROL.md](docs/CONTROL.md) pour la programmation des jours (lundi=0), les scénarios globaux, les retours et les exceptions. Les contrôles HTTP ont été **validés manuellement en conditions réelles via un banc d'essai séparé**, mais les nouvelles méthodes SDK v0.3.0 ne sont **pas encore validées elles-mêmes** sur Otodo réel ; les tests automatisés utilisent un faux serveur local.
+
+### Limites et sécurité
+
+- Les opérations globales ne sont **pas atomiques**. Une panne au milieu peut laisser un logement en Présence/Absence avec seulement certaines zones modifiées ; ne pas relancer automatiquement.
+- Avant un PUT, le service est relu et seuls les champs autorisés sont changés. **Sans ETag / contrôle de version côté serveur, un conflit reste possible entre la dernière lecture et l'écriture**.
+- Le SDK refuse un `loadShedding` autre que `false`, mais cela **ne prouve pas** l'absence d'une modulation réseau active. Ne pas piloter pendant un effacement/intervention VAV.
+- Otodo peut conserver `holidays` en base après retour Auto : `workingMode==7` seul indique des vacances actives. Le retour Présence force Auto, sans restaurer le mode précédent.
+- Pas encore de cache HTTP 304, WebSocket ou interprétation validée de la nature cumulative des données kWh.
 
 ## Documentation, développement et publication
 
 - [`docs/PROTOCOL.md`](docs/PROTOCOL.md) : protocole observé et limites.
+- [`docs/CONTROL.md`](docs/CONTROL.md) : procédures et risques des commandes.
 - [`docs/RESILIENCE.md`](docs/RESILIENCE.md) : persistance des jetons, erreurs HTTP et garde-fous.
 - [`docs/LIVE_REFRESH_TEST.md`](docs/LIVE_REFRESH_TEST.md) : compte rendu du refresh réel et diagnostic facultatif.
 - [`VERSIONS.md`](VERSIONS.md) : versions.
