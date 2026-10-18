@@ -1,0 +1,32 @@
+# Python and test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+
+# Never commit live captures, credentials, tokens or emulator images.
+.env
+.env.*
+!.env.example
+*.apk
+*.xapk
+*.apkm
+*.har
+*.pcap
+*.pcapng
+captures/
+exports/
+secrets/
+*.token
+*.tokens
+*credentials*.json
+*authenticate_response.json
+*devices_response.json
+*hubs_response.json
+*consents_response.json

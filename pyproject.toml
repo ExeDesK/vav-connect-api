@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vav-connect-api"
+version = "0.1.1"
+description = "Async read-only Python SDK for VAV Connect / Otodo"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["aiohttp>=3.9,<4"]
+keywords = ["vav", "otodo", "home-assistant", "asyncio"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "License :: OSI Approved :: MIT License",
+  "Development Status :: 3 - Alpha",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "build>=1"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
