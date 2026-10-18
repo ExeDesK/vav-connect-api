@@ -1,21 +1,27 @@
-"""Client HTTP asynchrone (lecture seule) pour VAV Connect / Otodo.
+"""Client HTTP asynchrone VAV Connect/Otodo, strictement en lecture seule.
 
-Aucun endpoint de pilotage n'est implemente dans cette premiere version.
-Les seuls POST sont /authenticate et /refreshToken.
+Aucun PUT/PATCH/DELETE ni commande de chauffage. Les seuls POST autorises
+sont /authenticate et /refreshToken. Les GET sont relances de facon bornee
+uniquement sur des erreurs transitoires, jamais sur un HTTP 429.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import math
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from typing import Any, Literal
 from urllib.parse import quote, urlsplit
 
 import aiohttp
 
 from .auth import SessionTokens
-from .exceptions import APIError, AuthenticationError, ProtocolError, RateLimitError, TransportError
+from .exceptions import (
+    APIError, AuthenticationError, ForbiddenError, ProtocolError,
+    RateLimitError, TokenPersistenceError, TransportError,
+)
 from .models import Device, Home, Hub, Room, Snapshot, Thermostat
 
 DEFAULT_BASE_URL = "https://api.gateway.otodo.io"
@@ -26,9 +32,9 @@ _MISSING = object()
 class VAVClient:
     """SDK VAV en lecture seule.
 
-    `refresh_header_token='refresh'` est une HYPOTHESE non encore validee en
-    capture non masquee. Utiliser `access` si le test de l'application le montre.
-    Le client ne journalise jamais les tokens ni les reponses HTTP brutes.
+    Le header `token` de `/refreshToken` utilise le refresh_token : valide
+    par un appel reel le 18/10/2026. L'option `access` reste uniquement pour
+    compatibilite avec v0.1.x. Le SDK ne journalise ni tokens ni corps HTTP.
     """
 
     def __init__(
@@ -43,6 +49,8 @@ class VAVClient:
         timeout_seconds: float = 20,
         refresh_header_token: Literal["refresh", "access"] = "refresh",
         token_callback: TokenCallback | None = None,
+        max_read_retries: int = 1,
+        retry_backoff_seconds: float = 0.25,
     ) -> None:
         if bool(email) != bool(password):
             raise ValueError("Fournir email et mot de passe ensemble, ou des tokens existants")
@@ -61,8 +69,14 @@ class VAVClient:
             or parsed.password is not None
         ):
             raise ValueError("base_url doit etre HTTPS (HTTP permis uniquement en local pour les tests)")
-        if timeout_seconds <= 0:
-            raise ValueError("timeout_seconds doit etre positif")
+        if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)) \
+                or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("timeout_seconds doit etre un nombre fini strictement positif")
+        if type(max_read_retries) is not int or not 0 <= max_read_retries <= 3:
+            raise ValueError("max_read_retries doit etre un entier entre 0 et 3")
+        if isinstance(retry_backoff_seconds, bool) or not isinstance(retry_backoff_seconds, (int, float)) \
+                or not math.isfinite(retry_backoff_seconds) or not 0 <= retry_backoff_seconds <= 10:
+            raise ValueError("retry_backoff_seconds doit etre un nombre entre 0 et 10")
 
         self._email = email
         self._password = password
@@ -74,6 +88,8 @@ class VAVClient:
         self._timeout = aiohttp.ClientTimeout(total=timeout_seconds)
         self._refresh_header_token = refresh_header_token
         self._token_callback = token_callback
+        self._max_read_retries = max_read_retries
+        self._retry_backoff_seconds = retry_backoff_seconds
         self._auth_lock = asyncio.Lock()
 
     def __repr__(self) -> str:
@@ -111,7 +127,7 @@ class VAVClient:
             "mobileversion": "4.14.4",
             "timezoneid": "GMT",
             "useragent": "android.vav.4.14.4",
-            "User-Agent": "vav-connect-api/0.1.0",
+            "User-Agent": "vav-connect-api/0.2.0",
         }
         if token is not None:
             headers["token"] = token
@@ -128,10 +144,16 @@ class VAVClient:
     ) -> object:
         # Verrou de securite: pas de PUT/PATCH/DELETE ni de POST de pilotage.
         if method not in {"GET", "POST"} or (method == "POST" and path not in {"/authenticate", "/refreshToken"}):
-            raise ValueError("La version 0.1.0 autorise uniquement les lectures et les POST d'authentification")
+            raise ValueError("Lecture seule : seuls GET et les POST de session sont autorises")
         if not path.startswith("/") or path.startswith("//") or "?" in path or "#" in path:
             raise ValueError("Chemin API non valide")
-        kwargs: dict[str, Any] = {"headers": self._headers(token), "timeout": self._timeout}
+        # Interdire toutes les redirections, y compris inter-domaines : le
+        # header `token` est proprietaire et ne doit jamais etre propage.
+        kwargs: dict[str, Any] = {
+            "headers": self._headers(token),
+            "timeout": self._timeout,
+            "allow_redirects": False,
+        }
         if body is not _MISSING:
             kwargs["json"] = body
         elif empty_body:
@@ -139,14 +161,16 @@ class VAVClient:
         session = await self._get_session()
         try:
             async with session.request(method, self._base_url + path, **kwargs) as response:
-                if response.status in {401, 403}:
-                    raise AuthenticationError(f"Authentification refusee (HTTP {response.status}, {path})")
+                if response.status == 401:
+                    raise AuthenticationError(f"Authentification refusee (HTTP 401, {path})")
+                if response.status == 403:
+                    raise ForbiddenError(method, path)
                 if response.status == 429:
                     raise RateLimitError(method, path, response.headers.get("Retry-After"))
+                if 300 <= response.status < 400:
+                    raise ProtocolError(f"Redirection HTTP/cache non supportee sur {method} {path}")
                 if response.status >= 400:
                     raise APIError(method, path, response.status)
-                if response.status == 304:
-                    raise ProtocolError(f"HTTP 304 sans cache exploitable sur {path}")
                 if response.status == 204:
                     raise ProtocolError(f"Reponse JSON attendue, HTTP 204 sur {path}")
                 try:
@@ -158,13 +182,30 @@ class VAVClient:
             # Ne pas integrer str(exc), qui pourrait comporter l'URL complete.
             raise TransportError(f"Echec reseau vers VAV sur {method} {path}") from None
 
-    async def _save_tokens(self, data: object) -> SessionTokens:
+    async def _save_tokens(self, data: object, *, preserve_metadata: bool = False) -> SessionTokens:
         if not isinstance(data, dict):
             raise ProtocolError("La reponse de session n'est pas un objet JSON")
         tokens = SessionTokens.from_response(data)
+        if preserve_metadata and self._tokens is not None:
+            previous = self._tokens
+            tokens = replace(
+                tokens,
+                home_id=tokens.home_id or previous.home_id,
+                park_id=tokens.park_id or previous.park_id,
+                user_id=tokens.user_id or previous.user_id,
+            )
+        # Apres un refresh reussi, les anciens jetons peuvent etre invalides
+        # immediatement. Ne PAS revenir en arriere si le callback echoue.
         self._tokens = tokens
         if self._token_callback is not None:
-            await self._token_callback(tokens)
+            try:
+                await self._token_callback(tokens)
+            except Exception:
+                # Ne jamais incorporer l'exception du stockage, qui pourrait
+                # contenir les jetons ou le contenu d'un fichier sensible.
+                raise TokenPersistenceError(
+                    "Nouveaux jetons actifs en memoire, sauvegarde externe echouee"
+                ) from None
         return tokens
 
     async def _authenticate_locked(self) -> SessionTokens:
@@ -191,10 +232,10 @@ class VAVClient:
             else self._tokens.access_token
         )
         data = await self._http("POST", "/refreshToken", token=token, empty_body=True)
-        return await self._save_tokens(data)
+        return await self._save_tokens(data, preserve_metadata=True)
 
     async def refresh(self) -> SessionTokens:
-        """Renouvellement manuel; necessite la validation du type de token."""
+        """Renouvellement manuel, avec rotation des deux jetons."""
         async with self._auth_lock:
             return await self._refresh_locked()
 
@@ -226,22 +267,44 @@ class VAVClient:
             except AuthenticationError:
                 await self._authenticate_locked()
 
+    async def _get_with_bounded_retries(self, path: str, token: str) -> object:
+        """GET seulement : relance des erreurs transitoires, jamais les 429/403."""
+        for attempt in range(self._max_read_retries + 1):
+            try:
+                return await self._http("GET", path, token=token)
+            except (TransportError, APIError) as exc:
+                if isinstance(exc, APIError) and exc.status not in {408, 500, 502, 503, 504}:
+                    raise
+                if attempt >= self._max_read_retries:
+                    raise
+                if self._retry_backoff_seconds:
+                    await asyncio.sleep(self._retry_backoff_seconds * (2 ** attempt))
+        raise AssertionError("Code inaccessible")
+
     async def _get(self, path: str) -> object:
         await self._ensure_valid_tokens()
         assert self._tokens is not None
         old_token = self._tokens.access_token
         try:
-            return await self._http("GET", path, token=old_token)
+            return await self._get_with_bounded_retries(path, old_token)
         except AuthenticationError:
             await self._recover_after_401(old_token)
             assert self._tokens is not None
-            return await self._http("GET", path, token=self._tokens.access_token)
+            # Une seule reprise apres 401. Aucune boucle de refresh.
+            return await self._get_with_bounded_retries(path, self._tokens.access_token)
 
     async def _get_list(self, path: str) -> list[dict[str, Any]]:
         data = await self._get(path)
         if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
             raise ProtocolError(f"Liste JSON attendue sur {path}")
         return data
+
+    async def get_api_health(self) -> str:
+        """Etat de l'API cloud elle-meme, PAS de la passerelle ni du contrat d'effacement."""
+        data = await self._get("/health")
+        if not isinstance(data, dict) or not isinstance(data.get("health"), str):
+            raise ProtocolError("Etat API invalide sur /health")
+        return data["health"]
 
     async def get_home(self) -> Home:
         """L'endpoint /homes renvoie UN objet dans les captures VAV 4.14.4."""

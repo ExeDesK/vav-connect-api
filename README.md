@@ -2,64 +2,67 @@
 
 **SDK Python asynchrone, communautaire et non officiel pour VAV Connect / Otodo.**
 
-**Version 0.1.1 — alpha, lecture seule.** Le code repose sur les echanges HTTPS observes dans VAV Android 4.14.4. Les lectures ont ete **validees sur un compte autorise reel** ; le renouvellement des tokens reste a verifier. Ce n'est pas une integration HACS ; celle-ci sera developpee dans un depot separe (`ha-vav-connect`).
+**Version 0.2.0 — alpha, strictement en lecture seule.** Les lectures et le renouvellement de session ont été validés sur un compte autorisé réel le 18 octobre 2026. Cette bibliothèque est indépendante de Home Assistant : la future intégration HACS sera hébergée dans un dépôt distinct, `ha-vav-connect`.
 
-Le projet ne modifie ni la passerelle, ni l'appairage, ni la configuration d'effacement electrique. Il ne transmet aucune commande aux radiateurs : les **seuls POST autorises** sont la connexion (`/authenticate`) et le renouvellement de session (`/refreshToken`).
+> **Préserver VAV et l'effacement électrique.** Le SDK n'envoie aucune commande aux thermostats et ne modifie ni la passerelle, ni son appairage, ni les paramètres d'effacement. Les seuls `POST` autorisés sont `/authenticate` et `/refreshToken`. Aucun `PUT`, `PATCH` ou `DELETE` n'est implémenté.
 
-## Pourquoi Python et pas TypeScript / JavaScript ?
+## Pourquoi Python plutôt que TypeScript / JavaScript ?
 
-Nous avons retenu **Python pour la branche principale**, parce que l'objectif prioritaire est une integration native Home Assistant :
+Le choix de **Python pour `main`** découle de notre cible principale : **une intégration Home Assistant native, simple à installer via HACS**.
 
-- Home Assistant execute ses integrations en Python. Un SDK Python asynchrone (`aiohttp`) peut etre importe directement dans l'integration HACS et reutiliser sa session HTTP, sans serveur intermediaire.
-- Une seule pile runtime simplifie l'installation, le diagnostic, la gestion des identifiants et la maintenance sur Home Assistant OS, Container et Core.
-- La bibliotheque Python reste independante de Home Assistant et exploitable dans un script, un outil CLI ou un autre projet Python.
-- C'est un **choix de deploiement et de maintenance**, pas une limite technique de l'API Otodo, qui parle HTTPS/JSON et convient tout autant a TypeScript.
+- Les intégrations Home Assistant sont des composants Python. Notre SDK asynchrone basé sur `aiohttp` peut être importé directement et utiliser une session HTTP fournie par Home Assistant, sans conteneur Node.js supplémentaire ni serveur REST intermédiaire.
+- Une seule pile réduit le nombre de services à maintenir et simplifie déploiement, journalisation, authentification, traitement des erreurs et dépannage.
+- Le SDK est **indépendant de Home Assistant** : il fonctionne aussi dans des scripts ou services Python et pourra être publié sur PyPI.
+- **Ce n'est pas une contrainte du protocole Otodo** : son interface HTTPS/JSON pourrait tout aussi bien être consommée depuis TypeScript.
 
-**TypeScript reste pertinent pour une API REST autonome** : typage partage avec les clients web, ecosysteme npm, Fastify et integration facile dans des outils comme n8n. Nous prevoyons donc une branche Git **`ts/rest`** pour explorer cette alternative sans introduire de dependances Node.js dans `main`. Cette branche est d'abord un espace d'experimentation, **pas une deuxieme API deja fonctionnelle**. Si une variante TypeScript/REST devient un produit maintenu et publie, il sera preferable de la transformer en paquet ou depot autonome plutot que d'entretenir deux implementations divergentes dans des branches permanentes.
+Un **SDK TypeScript et une API REST Fastify** seraient pertinents pour une utilisation depuis le web, Node.js, n8n ou d'autres langages. Une branche expérimentale **`ts/rest` est envisagée plus tard**, mais **n'existe pas dans le dépôt GitHub actuel** ; sa création a été volontairement reportée. Si la variante REST devient un produit maintenu, un dépôt ou paquet séparé sera probablement plus sain qu'une branche Git permanente.
 
-**Architecture visee :** `ha-vav-connect` (HACS, Python) → `vav-connect-api` (ce SDK) → cloud Otodo → passerelle VAV existante. L'eventuel serveur REST est **optionnel**, jamais requis par HACS.
+**Architecture cible :** `ha-vav-connect` (HACS/Python) → `vav-connect-api` (ce SDK) → API cloud Otodo → passerelle VAV d'origine.
 
-## Fonctionnalites v0.1.1
+## Fonctionnalités de v0.2.0
 
-- `POST /authenticate` avec `email`, `password`, `parkName=vav`.
-- `POST /refreshToken` **sans body**, avec header `token`, rotation des tokens et expiration prise en compte.
-- Renouvellement preventif (5 minutes avant expiration), sur HTTP 401 et une seule nouvelle tentative de lecture ; reconnexion possible si les identifiants sont disponibles.
-- Lecture `GET /homes`, `/hubs`, `/rooms`, `/devices`, `/hubs/{hubId}/local-services`.
-- Modeles Python immuables pour les logements, pieces, passerelles, capteurs, modules, thermostats, horaires et vacances.
-- Lecture des temperatures (Kelvin x10 → °C), humidite, batterie, connectivite et puissance ; association thermostat ↔ capteur/module.
-- Exposition de la valeur kWh **sans la qualifier de compteur cumulatif** : sa semantique temporelle n'est pas encore etablie.
-- Exclusion volontaire des proprietes et secrets Zigbee, des mots de passe de passerelle et des metadonnees personnelles non necessaires.
-- Rate limit HTTP 429 remonte a l'appelant, sans flood de requetes.
+- Authentification initiale : `POST /authenticate`, `parkName=vav`.
+- Refresh **confirmé sur le cloud réel** : `POST /refreshToken` sans corps, en-tête `token: <refresh_token>`. **Les deux jetons changent** à chaque renouvellement réussi ; le nouvel `access_token` a été testé sur `GET /homes`.
+- Expiration avec marge de sécurité de 5 minutes, refresh préventif, reprise contrôlée sur `401`, verrouillage des renouvellements concurrents.
+- Sérialisation/restauration explicites des jetons (`SessionTokens.to_storage()` / `from_storage()`), sans sauvegarde disque automatique ; callback asynchrone pour la persistance gérée par le client.
+- Résilience limitée aux **GET** : une relance par défaut sur erreur de transport ou HTTP `408/500/502/503/504`, temporisation courte et configurable. **Pas de retry automatique de `POST` ou de HTTP `429`.**
+- Distinction entre `401` (nouveau refresh envisageable), `403` (accès interdit sans refresh) et `429` (quota, délai `Retry-After` exposé). Redirections HTTP désactivées pour éviter la propagation du header secret `token`.
+- Lecture de `/homes`, `/hubs`, `/rooms`, `/devices`, `/hubs/{hubId}/local-services` et `/health` (état du **cloud**, pas état des radiateurs).
+- Modèles immuables, projection sans secrets Zigbee/Wi-Fi ni métadonnées personnelles inutiles, reconnaissance des 8 modes thermostat, ordres fil pilote, vacances et événements hebdomadaires.
+- Propriétés dérivées par zone : température, consigne Confort, humidité, batterie, connectivité, puissance. La mesure kWh est disponible **sans hypothèse de cumul**.
+- **51 tests automatisés locaux** sans aucun contact avec le cloud Otodo.
 
-### Important : type de token de refresh encore a valider sur un compte reel
+## Installer et tester (Windows / PowerShell)
 
-La capture **confirme** : `POST https://api.gateway.otodo.io/refreshToken`, body vide, header `token: ...`, reponse contenant `access_token`, `refresh_token` et `expires_in=2592000` (30 jours). En revanche, l'en-tete etait masque dans la capture : **nous ne savons pas avec certitude** s'il contenait l'`access_token` ou le `refresh_token` precedent.
-
-Par defaut le SDK utilise le **refresh token** (hypothese logique, mais non confirmee). Si une capture ulterieure montre qu'Otodo utilise l'access token, choisir `refresh_header_token="access"`. Avec login et mot de passe, un echec d'authentification au refresh declenche au maximum une reconnexion par les identifiants ; sans identifiants sauvegardes, une erreur est remontee.
-
-## Installation locale (Windows / PowerShell)
-
-Python **3.11+** :
+Prérequis : **Python 3.11+** et Git.
 
 ```powershell
-cd .\vav-connect-api
-py -m venv .venv
+cd .\vav-connect-api  # depuis le repertoire parent du depot
+py -m venv .venv            # uniquement si le venv n'existe pas
 .\.venv\Scripts\Activate.ps1
 python -m pip install -e ".[dev]"
 python -m pytest -q
 ```
 
-L'installation editable ne publie rien sur PyPI. Aucune cle ni identifiant de production ne doit etre place dans le code ou les tests.
+Le nom de dossier est indicatif. Les tests ne déclenchent aucune écriture de chauffage ; ils parlent exclusivement à un serveur HTTP simulé sur `127.0.0.1`.
 
-### Premier exemple : lecture seule
+### Premier test sur son installation
 
 ```powershell
-$env:VAV_EMAIL = "mon-adresse@example.com"
-$env:VAV_PASSWORD = "mon-mot-de-passe"
-python .\examples\inspect_account.py
+$env:VAV_EMAIL = Read-Host "Email VAV"
+$env:VAV_PASSWORD = [System.Net.NetworkCredential]::new(
+    "", (Read-Host "Mot de passe VAV" -AsSecureString)
+).Password
+try {
+    python .\examples\inspect_account.py
+} finally {
+    Remove-Item Env:\VAV_PASSWORD -ErrorAction SilentlyContinue
+}
 ```
 
-Ou dans du code Python :
+Ne publiez **jamais** les identifiants, jetons, captures HTTP, clés Zigbee, informations de point de livraison électrique ou sauvegardes de session sur GitHub. Les fichiers `tests/` n'emploient que des données synthétiques.
+
+### Depuis un script Python
 
 ```python
 import asyncio
@@ -68,105 +71,69 @@ from vav_connect import VAVClient, WorkingMode
 async def main():
     async with VAVClient("email@example.com", "mot-de-passe") as client:
         snapshot = await client.get_snapshot()
-        print("Present :", snapshot.home.is_at_home)
+        print("Présent :", snapshot.home.is_at_home)
         for zone in snapshot.zones:
-            mode = zone.thermostat.working_mode
-            print(zone.name, zone.temperature_c, mode == WorkingMode.AUTO)
+            print(zone.name, zone.temperature_c, zone.comfort_temperature_c,
+                  zone.working_mode == WorkingMode.AUTO)
 
 asyncio.run(main())
 ```
 
-`get_snapshot()` fait les lectures necessaires une fois (quatre GET + un GET par passerelle). Il ne lance pas de polling automatique. L'exemple n'imprime pas de tokens ni de cle Zigbee.
+Les valeurs de cet exemple sont des placeholders, pas de vrais identifiants. `get_snapshot()` effectue **4 GET plus 1 GET par passerelle**, sans surveillance en tâche de fond. Pour HA, prévoir une actualisation mesurée (par exemple 60–120 secondes, ajustable) : les limites d'API Otodo sont inconnues.
 
-### Tokens et securite
+## Conserver la session entre redémarrages
 
-Par defaut, les tokens sont conserves **uniquement en memoire** et ne sont pas enregistres sur disque. Les champs secrets de `SessionTokens` ne figurent pas dans son `repr`. Pour une integration HA future, le `token_callback` asynchrone pourra sauvegarder les nouveaux tokens dans un stockage **protege** (la bibliotheque ne propose pas elle-meme de chiffrement). **Ne jamais logger `client.tokens.access_token`, `refresh_token`, les requetes brutes ou les fichiers captures.**
+Le SDK conserve les jetons **en mémoire uniquement**. Pour une application qui doit survivre à un redémarrage, l'appelant peut fournir un `token_callback` asynchrone, qui sauvegardera **les deux nouveaux jetons** de façon atomique après chaque connexion ou refresh. En cas d'échec de cette sauvegarde, une `TokenPersistenceError` est levée ; le SDK garde néanmoins les nouveaux jetons en mémoire pour ne pas revenir à une paire potentiellement invalidée.
 
-L'import d'une session precedente est possible avec `VAVClient(tokens=ma_session)`. Fournir egalement `email/password` est facultatif pour une reconnexion de secours.
+`SessionTokens.to_storage()` renvoie **des secrets en clair**. Il n'y a volontairement **pas d'écriture sur disque, de chiffrement ou de gestion de secret fournis par le SDK**. C'est à l'intégration appelante d'utiliser son stockage confidentiel, d'en contrôler les permissions et d'éviter tout affichage du dictionnaire. `SessionTokens.from_storage()` permet de réhydrater la session avant de créer `VAVClient(tokens=...)`.
 
-Le polling dans Home Assistant devra etre raisonnable (par exemple 60–120 s, ajustable) : les quotas du cloud n'ont pas ete documentes. L'integration HA n'est pas fournie dans cette livraison.
+La sauvegarde atomique est particulièrement importante : le refresh **fait tourner le `refresh_token`**. Voir [`docs/RESILIENCE.md`](docs/RESILIENCE.md) pour la politique d'authentification, de reprise et de confidentialité.
 
-## Comprendre les modes
+## Modes thermostat et fil pilote
 
-**Mode global (`thermostat.working_mode`)** :
+Ces deux énumérations sont distinctes :
 
-| Valeur | Signification |
+| `workingMode` | Mode thermostat |
 |---:|---|
 | 0 | Auto |
 | 1 | Confort |
 | 2 | Confort -1 °C |
 | 3 | Confort -2 °C |
-| 4 | Eco |
+| 4 | Éco |
 | 5 | Hors gel |
-| 6 | Arret |
+| 6 | Arrêt |
 | 7 | Vacances |
 
-**Ordre fil pilote** (`weeklyEvents.mm`, `holidays.mm` et capacite 6 du module) :
-
-| Valeur | Signification |
+| `weeklyEvents.mm` / `holidays.mm` | Ordre fil pilote |
 |---:|---|
-| 0 | Arret |
+| 0 | Arrêt |
 | 2 | Confort |
-| 3 | Eco |
+| 3 | Éco |
 | 8 | Hors gel |
 | 9 | Confort -1 °C |
 | 10 | Confort -2 °C |
 
-Il ne faut jamais melanger ces deux systemes de codes. En vacances : `workingMode=7` et `holidays={until: date UTC, mm: 3|8|0}`. `weeklyEvents.t` est interprete comme une minute absolue dans la semaine (`1440*d + minute du jour`) ; le jour civil correspondant a `d=0` reste a confirmer.
+Pendant les vacances, `workingMode=7` et `holidays` contient une date ISO-UTC et un mode `mm` (`3` Éco, `8` Hors gel, `0` Arrêt). Le tableau `weeklyEvents` utilise `d` (indice 0..6), `t` (minute absolue depuis le début de la semaine) et `mm` (ordre fil pilote). **La correspondance entre `d=0` et le jour civil précis reste à confirmer**.
 
-Voir [`docs/PROTOCOL.md`](docs/PROTOCOL.md) pour les observations, incertitudes et futures commandes.
+Les méthodes `thermostat.events_for_day(d)`, `zone.humidity_pct`, `zone.battery_pct`, `zone.power_w`, etc., sont des accès **en lecture seule** à ces données.
 
-## Test reel du renouvellement (sans ecriture de chauffage)
+## Limites de cette version
 
-Les premieres lectures reelles de logement, passerelle et thermostats ont reussi ; le refresh reste le point a verifier.
+- Les commandes de température, modes, présence, vacances et programmation ne sont **pas implémentées** malgré leur observation dans l'application Android. Les requêtes d'écriture de l'application transmettent quasiment tout l'objet thermostat ; réémettre un ancien `loadShedding` serait risqué pour l'effacement.
+- Le succès HTTP du refresh et la rotation des tokens sont **validés sur un compte réel** ; la reprise automatique après des mois d'inactivité et la persistance sur stockage HA restent à éprouver dans le futur client HA.
+- Les erreurs HTTP `304` sont remontées (`ProtocolError`) : pas de cache ETag exploitable à ce stade.
+- Les propriétés liées à l'effacement et les valeurs kWh restent **non interprétées** au-delà de leurs données brutes autorisées.
+- WebSocket, synchronisation des programmations et contrôle concurrent des modifications ne sont pas implémentés.
 
-Le script `examples/verify_refresh.py` force un refresh **une seule fois**, sans attendre l'expiration : connexion, GET `/homes`, POST `/refreshToken`, puis GET `/homes` avec le nouveau token. Il n'affiche aucun secret, ne sauvegarde aucun jeton et ne tente pas silencieusement une nouvelle connexion si le refresh est refuse.
+## Documentation, développement et publication
 
-Dans PowerShell (venv active), utiliser :
+- [`docs/PROTOCOL.md`](docs/PROTOCOL.md) : protocole observé et limites.
+- [`docs/RESILIENCE.md`](docs/RESILIENCE.md) : persistance des jetons, erreurs HTTP et garde-fous.
+- [`docs/LIVE_REFRESH_TEST.md`](docs/LIVE_REFRESH_TEST.md) : compte rendu du refresh réel et diagnostic facultatif.
+- [`VERSIONS.md`](VERSIONS.md) : versions.
+- [`CONTEXT.md`](CONTEXT.md) : décisions et suite prévue.
+- [`AGENTS.md`](AGENTS.md) : règles de contribution.
 
-```powershell
-$env:VAV_EMAIL = Read-Host "Email VAV"
-$env:VAV_PASSWORD = [System.Net.NetworkCredential]::new("", (Read-Host "Mot de passe VAV" -AsSecureString)).Password
-try {
-    python .\examples\verify_refresh.py --header-token refresh
-} finally {
-    Remove-Item Env:\VAV_PASSWORD -ErrorAction SilentlyContinue
-}
-```
+CI GitHub Actions : tests Python 3.11, 3.12, 3.13 + construction du paquet. **Aucune publication PyPI automatique** n'est configurée et aucune variable secrète n'est nécessaire.
 
-Si le refresh renvoie une erreur HTTP 401/403, **ne pas repeter en boucle** : essayer ensuite la variante `--header-token access` (une nouvelle connexion est necessaire). Les deux variantes ne doivent pas etre lancees automatiquement. Voir [`docs/LIVE_REFRESH_TEST.md`](docs/LIVE_REFRESH_TEST.md) pour les resultats attendus et precautions.
-
-Les tests automatiques emploient exclusivement un faux serveur local. Les commandes `PUT` sont absentes de cette version, et les fonctions d'effacement restent gerees par VAV.
-
-**Les commandes `PUT` sont volontairement absentes de cette version.** L'application Android envoie des objets thermostat presque complets via `PUT /hubs/{hubId}/local-services/{serviceId}` ; nous ne savons pas si les mises a jour partielles sont acceptees, et un objet perime pourrait ecraser `loadShedding` ou une programmation. Le pilote ne sera ajoute qu'apres validation de la securite des mises a jour et du comportement pendant un effacement electrique.
-
-## Git et branche `ts/rest`
-
-Une archive Git bundle (`vav-connect-api-branches.bundle`) accompagne la livraison et conserve les branches `main` et `ts/rest`. Clonage :
-
-```powershell
-git clone .\vav-connect-api-branches.bundle vav-connect-api
-git -C .\vav-connect-api branch --all
-git -C .\vav-connect-api switch ts/rest  # espace de recherche TS/REST
-```
-
-Pour publier sur GitHub, creer d'abord un **depot vide** (sans README genere), puis renseigner son URL :
-
-```powershell
-git remote add origin https://github.com/VOTRE_COMPTE/vav-connect-api.git
-git push -u origin main
-git push -u origin ts/rest
-```
-
-Ne jamais publier de captures reelles ou de fichiers contenant des tokens. La branche TypeScript n'est qu'un prototype documentaire a ce stade, sans serveur Node.js fonctionnel.
-
-## Statut, projet et licence
-
-- [`VERSIONS.md`](VERSIONS.md) : historique des versions.
-- [`CONTEXT.md`](CONTEXT.md) : decisions prises, hypotheses et etapes suivantes.
-- [`AGENTS.md`](AGENTS.md) : regles de contribution et tests obligatoires.
-- [`docs/PROTOCOL.md`](docs/PROTOCOL.md) : routes et formats traces.
-- Tests : `python -m pytest -q`, sans reseau Otodo (serveur HTTP simule en local).
-- Licence : [MIT](LICENSE).
-
-**Projet communautaire non officiel, sans affiliation ni validation par VAV, Otodo ou un operateur d'effacement.**
+**Projet communautaire non officiel, sans affiliation ni validation par VAV, Otodo ou un opérateur d'effacement électrique.** Licence : [MIT](LICENSE).

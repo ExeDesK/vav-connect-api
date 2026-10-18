@@ -28,7 +28,7 @@ Ne jamais ecrire de jeton ou de mot de passe dans les fichiers, le chat, le term
 ## Resultats possibles
 
 - **Etapes 1/4 a 4/4 OK** : le serveur accepte le header `token` avec le **refresh token** ; la session retournee fonctionne pour un GET.
-- **Echec a l'etape 3/4, HTTP 401/403** : le serveur refuse l'hypothese `refresh`. Il peut utiliser l'**access token**, ou une autre logique. Ne pas relancer en boucle ; re-tester une seule fois avec `--header-token access`, en fournissant a nouveau le mot de passe via PowerShell.
+- **Echec a l'etape 3/4, HTTP 401/403** : le serveur refuse l'hypothese `refresh`. L'hypothèse refresh est pourtant confirmée par le test réel du 18/10/2026 : relever la réponse du serveur et vérifier une éventuelle évolution de l'API, sans relancer en boucle.
 - **Echec a l'etape 4/4** : le serveur a repondu au refresh mais le nouveau token ne fonctionne pas pour une lecture. Ne pas considerer le refresh valide.
 - **HTTP 429** : quota atteint ; stopper les essais.
 - **TransportError/ProtocolError** : verifier la connexion ou comparer au trafic HTTP Toolkit sans divulguer de secrets.
@@ -37,4 +37,18 @@ Pour tester la seconde hypothese, remplacer `refresh` par `access` dans la comma
 
 Le script n'affiche que des etats OK/echec et indique si les nouvelles valeurs d'access et de refresh ont change ; il n'affiche ni tokens ni identifiants du logement.
 
-**Important** : accepter l'une des deux hypotheses prouve ce que le serveur autorise pour ce test, pas forcement la valeur envoyee par l'application Android elle-meme. Cette derniere identification demanderait une capture locale non masquee, comparee sans divulguer les valeurs.
+**Important** : ce test confirme que le serveur accepte le refresh token ; il ne prouve pas que tous les clients Android utilisent exactement ce mécanisme dans toutes les situations.
+
+## Résultat réel confirmé — 18 octobre 2026
+
+L'essai manuel `--header-token refresh` a **réussi** sur un compte autorisé :
+
+- Authentification `POST /authenticate` : OK.
+- `GET /homes` avec l'ancien access token : OK.
+- `POST /refreshToken` sans body et avec **refresh token** dans l'en-tête `token` : OK.
+- Nouvelle paire reçue, **access et refresh tous deux différents** des anciens.
+- `GET /homes` avec le nouvel access token : OK.
+
+Aucune valeur de jeton n'a été enregistrée dans le dépôt. La variante `--header-token access` n'est donc **plus nécessaire** pour implémenter la session. Le diagnostic historique conserve cette option uniquement pour compatibilité v0.1.x.
+
+Ce test confirme les endpoints de session et leur rotation, mais ne constitue pas encore une validation d'une exécution continue après 30 jours ni d'un stockage persistant Home Assistant.

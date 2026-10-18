@@ -4,10 +4,11 @@ Ce document decrit exclusivement les **captures partagees**, sans replay de comm
 
 ## Points HTTP observes
 
-| Methode | Route | Objet | Dans SDK v0.1 |
+| Methode | Route | Objet | Dans SDK v0.2 |
 |---|---|---|---|
 | POST | `/authenticate` | Connexion `email`, `password`, `parkName: vav` | Oui |
-| POST | `/refreshToken` | Renouvellement (aucun body, header `token`) | Oui, type du token non confirme |
+| POST | `/refreshToken` | Renouvellement (aucun body, header `token`) | Oui, refresh token confirmé sur compte autorisé |
+| GET | `/health` | État du cloud, pas de la passerelle | Oui |
 | GET | `/homes` | Objet logement unique avec `isAtHome` | Oui |
 | GET | `/hubs` | Liste des passerelles, contient aussi des **secrets** a filtrer | Oui, projection sure |
 | GET | `/rooms` | Pieces | Oui |
@@ -31,9 +32,9 @@ useragent: android.vav.4.14.4
 User-Agent: okhttp/4.12.0
 ```
 
-`token` est un en-tete HTTP specifique, **non** `Authorization: Bearer ...` pour la capture de PUT. La reponse d'auth contient pourtant `token_type: Bearer`. Le SDK utilise `token` sur les GET, a confirmer par un test reel (la capture PUT demontre ce header).
+`token` est un en-tete HTTP specifique, **non** `Authorization: Bearer ...` pour la capture de PUT. La reponse d'auth contient pourtant `token_type: Bearer`. Le SDK utilise `token` sur les GET. Cette stratégie a été validée par la lecture réelle du logement et des cinq zones.
 
-La requete `POST /refreshToken` est **sans body** (Content-Length: 0). La reponse fournit `access_token`, `refresh_token`, `expires_in: 2592000` (secondes) et les identifiants de session. **On ne connait pas avec certitude lequel des deux tokens etait dans le header masque du refresh**. Le SDK suppose `refresh_token`; ce comportement est configurable, et doit etre valide par un essai reel.
+La requete `POST /refreshToken` est **sans body** (Content-Length: 0). La reponse fournit `access_token`, `refresh_token`, `expires_in: 2592000` (secondes) et les identifiants de session. **Validation réelle du 18/10/2026** : le header `token` contenant le **refresh token** a été accepté, les deux jetons retournés ont changé, et le nouvel access token a été accepté pour un GET `/homes`. L’option `refresh_header_token="access"` reste présente uniquement pour compatibilité avec les essais v0.1.x.
 
 ## Proprietes du thermostat
 
@@ -63,7 +64,7 @@ La capacite 6 du module ne doit pas etre confondue avec `workingMode` du thermos
 ## Menaces et garde-fous
 
 1. Les fichiers bruts `/devices` peuvent contenir des cles Zigbee dans `properties.keyList[].v` et des copies dans `temp[].properties` ; `/hubs` peut contenir des secrets de passerelle et Wi-Fi ; `/homes` peut contenir un identifiant de point de livraison et des renseignements personnels. **Ne jamais publier ces reponses brutes.**
-2. Le SDK ne retourne que des champs choisis explicitement ; il ignore volontairement les `properties` et champs arbitraires. Les tests utilisent des donnees **synthetiques**.
+2. Le SDK ne retourne que des champs choisis explicitement ; il ignore volontairement les `properties` et champs arbitraires. Les redirections sont désactivées : ne pas transférer le header `token` hors du domaine de confiance. Les tests utilisent des donnees **synthetiques**.
 3. Une ecriture de thermostat partielle n'est **pas encore validee**. Ne pas supposer qu'un PUT partiel fonctionne ni envoyer un PUT contenant un vieux `loadShedding`.
 4. Aucun mecanisme documente de concurrence (`ETag`/version serveur) n'a ete identifie pour les modifications ; prudence avant toute commande.
 5. La passerelle et le service d'effacement du reseau doivent continuer a fonctionner meme si le SDK ou Home Assistant est indisponible.

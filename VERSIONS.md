@@ -1,22 +1,31 @@
 # Historique des versions
 
+## 0.2.0 — 2026-10-18 — fiabilité et persistance de session
+
+- Le refresh a été **validé sur le cloud réel Otodo** : `POST /refreshToken` avec le **refresh token** dans l'en-tête `token`, requête sans body, et rotation effective des **deux** jetons. Une lecture GET avec le nouvel access token a réussi.
+- `SessionTokens.to_storage()` / `from_storage()` : format explicite versionné pour restaurer une session après redémarrage. Aucun stockage disque automatique et aucune garantie de chiffrement : l'appelant est responsable de la protection des secrets.
+- Callback de tokens sérialisé et gestion de l'échec d'enregistrement avec `TokenPersistenceError` ; les nouveaux jetons restent actifs en mémoire en cas d'échec du callback.
+- Conservation des identifiants de contexte si la réponse de refresh omet `homeId`, `parkId` ou `userId`.
+- GET : retry borné et configurable sur erreur de transport ou HTTP `408/500/502/503/504` ; aucune relance de requête d'authentification, d'un HTTP 429 ou d'un accès interdit.
+- HTTP 401 et 403 distingués ; `ForbiddenError` explicite. `RateLimitError.retry_after_seconds` interprète `Retry-After` si disponible.
+- Protection contre les redirections HTTP : le header propriétaire `token` n'est pas retransmis à un serveur tiers. HTTP 304 reste un échec explicite tant que le cache n'est pas géré.
+- Modèles enrichis : accès directs aux capteurs par zone, état d'alimentation du module, puissance nominale du radiateur, sélection des événements hebdomadaires par jour, filtrage des événements malformés.
+- Nouveau GET `/health` pour la disponibilité **du cloud** exclusivement.
+- CI GitHub Actions (3 versions de Python, tests hors ligne, construction des distributions) ; **51 tests locaux réussis** sur serveur simulé.
+- README : justification Python vs TypeScript conservée ; branche `ts/rest` explicitement reportée.
+- Toujours **strictement lecture seule** pour les équipements : aucune commande de radiateur ou d'effacement.
+
 ## 0.1.1 — 2026-10-18 — diagnostic du refresh
 
-- Exemple manuel `examples/verify_refresh.py` : teste login, lecture, refresh explicite et lecture apres refresh sur un compte autorise.
-- Deux possibilites testables individuellement (`--header-token refresh` ou `access`), sans retry silencieux ni divulgation de jetons.
-- Six tests supplementaires sur faux serveur local : succes, refus 401 sans reconnexion, variante access et absence d'identifiants.
-- Documentation de verification dans `docs/LIVE_REFRESH_TEST.md`.
-- Confirmation de la compatibilite reelle des **lectures** du SDK v0.1.0. Refresh de production encore a confirmer.
-
+- Exemple `examples/verify_refresh.py` : connexion, lecture, renouvellement explicite, lecture avec le nouveau jeton, sans secrets affichés et sans reconnexion de secours masquant le résultat.
+- Deux hypothèses de jetons testables indépendamment à l'époque (`refresh` ou `access`). Le test **réel ultérieur a confirmé `refresh`**.
+- Tests supplémentaires sur un faux serveur local et documentation dans `docs/LIVE_REFRESH_TEST.md`.
+- Premier `get_snapshot()` validé avec succès sur une installation VAV autorisée : logement, passerelle et cinq zones.
 
 ## 0.1.0 — 2026-10-18 — alpha SDK Python, lecture seule
 
-- Nouveau depot `vav-connect-api`, independant de l'integration HACS.
-- Client `aiohttp` avec login Otodo (`POST /authenticate`), header `token`, refresh sans body (`POST /refreshToken`) et re-authentification limitee en cas de 401.
-- Support du renouvellement preventif avec marge de 300 secondes et partage de session entre requetes concurrentes.
-- Endpoints GET : logement, passerelles, pieces, appareils, thermostats par passerelle et snapshot associe.
-- Modeles immuables de lecture : modes 0–7, ordres fil pilote, vacances, horaires, capteurs, puissance et valeur kWh non qualifiee.
-- Filtrage explicite des champs sensibles (cles Zigbee, Wi-Fi, secrets cloud/metadonnees de logement).
-- Tests automatiques sans appel au cloud Otodo.
-- README : justification du choix Python plutot que TypeScript et objectif de la branche experimentale `ts/rest`.
-- Limites explicites : absence de pilotage, identification du jeton de refresh non confirmee, aucune validation sur un compte reel a ce stade.
+- Client asynchrone `aiohttp` avec authentification `/authenticate`, header `token` et lecture des ressources cloud Otodo.
+- Lecture `/homes`, `/hubs`, `/rooms`, `/devices`, `/hubs/{hubId}/local-services` ; association entre capteurs, modules et thermostats.
+- Modèles immuables pour modes 0–7, ordres fil pilote, vacances et événements hebdomadaires.
+- Filtrage des secrets Zigbee, Wi-Fi, des identifiants personnels non nécessaires.
+- Tests sans accès au cloud, README expliquant le choix Python et architecture HACS séparée.
